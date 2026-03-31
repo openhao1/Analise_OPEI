@@ -125,11 +125,12 @@ stargazer(reg_log_simples, type = "text")
 
 # Teste de brant: confirmação de que a regressão pertence ao Proportional Odds Model (POM) ####
 
-brant(reg_log_ordinal)
+
 reg_log_ordinal <- polr(posicao_fator ~ negociacao_binaria + dip_pres_binaria,
                         data = dados_OPEI_preps,
                         Hess = TRUE)
 
+brant(reg_log_ordinal)
 
 # Conversão em probabilidades previstas e plotagem do gráfico ####
 
@@ -164,7 +165,6 @@ ggplot(
     values = c("1" = "blue","0" = "red"),
     labels = c("1" = "Pauta presente", "0" = "Pauta ausente")) +
   labs(
-    font = "Times New Roman"
     title = "Probabilidade prevista da Posição do Artigo",
     subtitle = "Efeito da presença da pauta comercial",
     x = "Posição do texto crítico da imprensa",
@@ -397,7 +397,6 @@ install.packages("scales")
 install.packages("zoo")
 
 library(scales)
-library(showtext)
 library(lubridate)
 library(zoo)
 
