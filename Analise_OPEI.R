@@ -5,6 +5,14 @@ install.packages("ggplot2")
 install.packages("readxl")
 install.packages("stargazer")
 install.packages("ggeffects")
+install.packages("purrr")
+install.packages("scales")
+install.packages("zoo")
+install.packages("nnet")
+install.packages("tidytext")
+install.packages("readr")    
+install.packages("stopwords")
+install.packages("lexiconPT")
 
 library(MASS)
 library(dplyr)
@@ -75,7 +83,6 @@ reg_log_simples <- polr(posicao_fator ~ factor(negociacao_binaria, ordered = FAL
                         data = dados_OPEI_preps,
                         Hess = TRUE)
 stargazer(reg_log_simples, type = "text")
-
 # Modelo 2. Com VC "Mandato"
 reg_log_mandato <- polr(posicao_fator ~ factor(negociacao_binaria, ordered = FALSE) + dip_pres_binaria + mandato_fator,
                         data = dados_OPEI_preps,
@@ -132,7 +139,8 @@ reg_log_ordinal <- polr(posicao_fator ~ negociacao_binaria + dip_pres_binaria,
 
 brant(reg_log_ordinal)
 
-# Conversão em probabilidades previstas e plotagem do gráfico ####
+
+# Conversão em probabilidades prTRUE# Conversão em probabilidades previstas e plotagem do gráfico ####
 
 ggpredict(reg_log_jornal, terms = c("negociacao_binaria", "dip_pres_binaria"))
 
@@ -393,14 +401,12 @@ tabela_assuntos_mais_citados <- dados_OPEI %>%
 
 head(tabela_assuntos_mais_citados, 20)
 
-install.packages("scales")
-install.packages("zoo")
 
 library(scales)
 library(lubridate)
 library(zoo)
 
-# Plotagem do gráfico de média móvel - OPEI (2014-2023)
+# Plotagem do gráfico de média móvel - OPEI (2014-2023) ####
 dados_suavizados <- dados_OPEI_preps %>%
   filter(!is.na(Ano), !is.na(Mes), !is.na(posicao_fator)) %>%
   mutate(
@@ -444,6 +450,7 @@ ggplot(dados_suavizados, aes(x = Data, y = percentual_final, fill = posicao_fato
   scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
   
   labs(
+    title = "Teor crítico da imprensa à PEB (2014-2023)",
     caption = "Fonte: Dados OPEI. Média móvel calculada sobre janela de 3 meses.",
     x = NULL, y = "Teor crítico dos artigos e editoriais", fill = NULL
   ) +
@@ -458,7 +465,7 @@ ggplot(dados_suavizados, aes(x = Data, y = percentual_final, fill = posicao_fato
     axis.text = element_text(color = "black", size = 10)
   )
 
-install.packages("purrr")
+
 library(purrr)
 
 set.seed(123)
@@ -477,6 +484,174 @@ amostra_OPEI_prop <- dados_OPEI_preps %>%
   group_split(mandato_fator, cod_classificacao_fator) %>%
   map2_dfr(plano_amostragem$n_alvo, ~ slice_sample(.x, n = .y))
 
-# Checagem
 print(nrow(amostra_OPEI_prop))
 table(amostra_OPEI_prop$mandato_fator, amostra_OPEI_prop$cod_classificacao_fator)
+
+
+ASA_OPEI <- read_excel("dados_OPEI_coleta_manual.xlsx")
+
+
+
+library(tidytext)
+library(readr)
+library(stopwords)
+library(lexiconPT)
+library(writexl)
+
+
+data("oplexicon_v3.0")
+
+names(oplexicon_v3.0)
+
+lexicon_pt_tidy <- oplexicon_v3.0 %>%
+  select(word = term, value = polarity) %>% # 
+  filter(value != 0) # Remove palavras neutras (polarity == 0)
+
+stops_pt <- data.frame(word = stopwords("pt"))
+
+
+textos_tidy <- ASA_OPEI %>%
+  mutate(id_artigo = row_number()) %>%        # Cria um ID único para cada linha/artigo
+  unnest_tokens(word, texto_extraido) %>%     # Transforma os textos em palavras individuais
+  anti_join(stops_pt, by = "word") %>%        # Remove as stopwords
+  inner_join(lexicon_pt_tidy, by = "word")    # Mantém apenas as palavras que têm polaridade no dicionário
+
+sentimento_por_artigo <- textos_tidy %>%
+  group_by(id_artigo) %>%                     # Agrupa as palavras de volta por artigo
+  summarise(
+    sentimento_total = sum(value),            # Soma a polaridade (-1 ou 1) das palavras
+    qtd_palavras_sentimentais = n()           # Conta quantas palavras "úteis" o artigo teve
+  )
+
+
+resultado_final <- ASA_OPEI %>%
+  mutate(id_artigo = row_number()) %>%        # Recria o ID para poder juntar
+  left_join(sentimento_por_artigo, by = "id_artigo") %>% 
+  
+  # Se um artigo não teve nenhuma palavra no dicionário, o resultado será NA.
+  # Vamos substituir esses NAs por 0 (sentimento neutro)
+  mutate(sentimento_total = ifelse(is.na(sentimento_total), 0, sentimento_total))
+
+
+library(nnet)
+
+dados_regressao <- resultado_final %>%
+  # Removemos linhas que por acaso não tenham recebido classificação humana
+  filter(!is.na(posicao_fator)) %>%
+  
+  # Transformamos a coluna em uma categoria (fator) usando os textos exatos.
+  # "Neutro" vem primeiro para ser a nossa referência na regressão.
+  mutate(posicao_fator = factor(posicao_fator, 
+                                levels = c("Neutro", "Contrário", "Favorável")))
+
+# 2. Criar o modelo de Regressão Logística Multinomial
+# Lemos: "A posicao_fator é explicada (~) pelo sentimento_total"
+modelo_logistico <- multinom(posicao_fator ~ sentimento_total, data = dados_regressao)
+
+# 3. Ver o resumo estatístico do modelo
+# Aqui você verá os coeficientes que mostram a força da relação
+summary(modelo_logistico)
+
+# 4. Validação (Matriz de Confusão)
+# O modelo tenta adivinhar a posição (Contrário/Neutro/Favorável) usando apenas a nota
+dados_regressao$previsao_modelo <- predict(modelo_logistico, dados_regressao)
+
+# Carregar os pacotes necessários para o gráfico
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# 1. Descobrir a nota mínima e máxima de sentimento no seu banco de dados
+nota_minima <- min(dados_regressao$sentimento_total, na.rm = TRUE)
+nota_maxima <- max(dados_regressao$sentimento_total, na.rm = TRUE)
+
+# 2. Criar uma sequência de 100 notas, indo da mínima até a máxima
+dados_grafico <- data.frame(
+  sentimento_total = seq(from = nota_minima, to = nota_maxima, length.out = 100)
+)
+
+# 3. Pedir para o modelo calcular a PROBABILIDADE para essa sequência de notas
+probabilidades <- predict(modelo_logistico, newdata = dados_grafico, type = "probs")
+
+# 4. Juntar as notas com as probabilidades calculadas
+dados_plot <- cbind(dados_grafico, probabilidades)
+
+# 5. Transformar a tabela para o formato longo (exigência do ggplot2)
+dados_plot_longo <- dados_plot %>%
+  pivot_longer(
+    cols = c("Neutro", "Contrário", "Favorável"), # As três colunas geradas pelo predict
+    names_to = "posicao_fator",                   # Nome da nova coluna com a categoria
+    values_to = "Probabilidade"                   # Nome da nova coluna com o valor percentual
+  )
+
+# 6. Criar o gráfico com ggplot2
+grafico_regressao <- ggplot(dados_plot_longo, aes(x = sentimento_total, y = Probabilidade, color = posicao_fator)) +
+  geom_line(size = 1.2) + # Cria as linhas do gráfico, levemente mais grossas
+  
+  # Personalizando as cores das linhas para fazer sentido
+  scale_color_manual(values = c("Contrário" = "#E06666", 
+                                "Neutro" = "#B7B7B7", 
+                                "Favorável" = "#6D9EEB")) +
+  
+  # Adicionando títulos e rótulos
+  labs(
+    title = "Probabilidade de Classificação vs. Análise de Sentimento",
+    subtitle = "Modelo de Regressão Logística Multinomial",
+    x = "Pontuação de Sentimento (Léxico)",
+    y = "Probabilidade do Modelo (0 a 1)",
+    color = "Análise Humana"
+  ) +
+  
+  # Um tema limpo e bonito para relatórios
+  theme_minimal() +
+  theme(legend.position = "bottom") # Coloca a legenda na parte de baixo
+
+# Exibir o gráfico na tela
+print(grafico_regressao)
+
+# 1. Executar o modelo ANOVA
+# Lemos: "O sentimento_total é influenciado (~) pela posicao_fator?"
+modelo_anova <- aov(sentimento_total ~ posicao_fator, data = dados_regressao)
+
+# 2. Ver o resultado geral da ANOVA
+print("=== RESULTADO GLOBAL DA ANOVA ===")
+summary(modelo_anova)
+
+# 3. Teste de Tukey (Comparações múltiplas)
+# Isso vai criar uma tabela cruzando as categorias duas a duas
+teste_tukey <- TukeyHSD(modelo_anova)
+print("=== RESULTADO DO TESTE DE TUKEY (Onde está a diferença?) ===")
+print(teste_tukey)
+
+# 4. Construção do Gráfico Boxplot
+grafico_anova <- ggplot(dados_regressao, aes(x = posicao_fator, y = sentimento_total, fill = posicao_fator)) +
+  # geom_boxplot desenha as caixas. O alpha=0.7 deixa as cores um pouco transparentes
+  geom_boxplot(alpha = 0.7, outlier.color = "black", outlier.shape = 16) +
+  
+  # Usamos as mesmas cores do gráfico anterior para manter a consistência visual na dissertação
+  scale_fill_manual(values = c("Contrário" = "#E06666", 
+                               "Neutro" = "#B7B7B7", 
+                               "Favorável" = "#6D9EEB")) +
+  
+  # Adicionando títulos metodológicos e eixos claros
+  labs(
+    title = "Distribuição do sentimento por categoria de orientação crítica da imprensa à PEB",
+    subtitle = "Análise de Variância (ANOVA)",
+    x = "Categorias da Análise do OPEI",
+    y = "Nota de Sentimento Automatizada (Máquina)"
+  ) +
+  
+  # Tema limpo
+  theme_minimal() +
+  
+  # Escondemos a legenda lateral porque o eixo X (embaixo) já tem os nomes das categorias
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 12))
+
+# Exibir o gráfico na tela
+print(grafico_anova)
+
+media_sentimento <- mean(dados_regressao$sentimento_total, na.rm = TRUE)
+desvio_sentimento <- sd(dados_regressao$sentimento_total, na.rm = TRUE)
+hist(dados_regressao$sentimento_total)
+
