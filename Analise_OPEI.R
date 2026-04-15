@@ -622,6 +622,7 @@ summary(modelo_anova)
 teste_tukey <- TukeyHSD(modelo_anova)
 print("=== RESULTADO DO TESTE DE TUKEY (Onde está a diferença?) ===")
 print(teste_tukey)
+plot(teste_tukey)
 
 # 4. Construção do Gráfico Boxplot
 grafico_anova <- ggplot(dados_regressao, aes(x = posicao_fator, y = sentimento_total, fill = posicao_fator)) +
