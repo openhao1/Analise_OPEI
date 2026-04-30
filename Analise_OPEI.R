@@ -22,7 +22,8 @@ library(tidyr)
 library(stargazer)
 library(brant)
 library(ggeffects)
-library(ggplot2)  
+library(broom)
+
 
 # Carregamento da base de dados ####
 dados_OPEI <- read_excel("Analise_OPEI.xlsx") # Colar o endereço do arquivo na suaaqui
@@ -30,7 +31,6 @@ head(dados_OPEI)
 names(dados_OPEI)
 
 # Fatorização e limpeza dos dados ####
-library(dplyr)
 summary(dados_OPEI)
 dados_OPEI_preps <- dados_OPEI %>%
   rename(dip_pres = "Diplomacia Presidencial") %>%
@@ -130,7 +130,7 @@ stargazer(reg_log_simples, reg_log_mandato, reg_log_jornal, type = "latex",
 
 stargazer(reg_log_simples, type = "text")
 
-# Teste de brant: confirmação de que a regressão pertence ao Proportional Odds Model (POM) ####
+# Teste de brant: confirmação de que a regressão pertence ao Partial Proportional Odds Model (PPOM) ####
 
 
 reg_log_ordinal <- polr(posicao_fator ~ negociacao_binaria + dip_pres_binaria,
@@ -140,7 +140,7 @@ reg_log_ordinal <- polr(posicao_fator ~ negociacao_binaria + dip_pres_binaria,
 brant(reg_log_ordinal)
 
 
-# Conversão em probabilidades prTRUE# Conversão em probabilidades previstas e plotagem do gráfico ####
+# Conversão em probabilidades previstas e plotagem do gráfico ####
 
 ggpredict(reg_log_jornal, terms = c("negociacao_binaria", "dip_pres_binaria"))
 
@@ -532,127 +532,68 @@ resultado_final <- ASA_OPEI %>%
   # Vamos substituir esses NAs por 0 (sentimento neutro)
   mutate(sentimento_total = ifelse(is.na(sentimento_total), 0, sentimento_total))
 
-
+# Tentativa de criação de modelo de Reg. Logística ####
 library(nnet)
-
 dados_regressao <- resultado_final %>%
-  # Removemos linhas que por acaso não tenham recebido classificação humana
   filter(!is.na(posicao_fator)) %>%
   
-  # Transformamos a coluna em uma categoria (fator) usando os textos exatos.
-  # "Neutro" vem primeiro para ser a nossa referência na regressão.
+
   mutate(posicao_fator = factor(posicao_fator, 
                                 levels = c("Neutro", "Contrário", "Favorável")))
-
-# 2. Criar o modelo de Regressão Logística Multinomial
-# Lemos: "A posicao_fator é explicada (~) pelo sentimento_total"
 modelo_logistico <- multinom(posicao_fator ~ sentimento_total, data = dados_regressao)
-
-# 3. Ver o resumo estatístico do modelo
-# Aqui você verá os coeficientes que mostram a força da relação
 summary(modelo_logistico)
+# Falha na parametrização
 
-# 4. Validação (Matriz de Confusão)
-# O modelo tenta adivinhar a posição (Contrário/Neutro/Favorável) usando apenas a nota
-dados_regressao$previsao_modelo <- predict(modelo_logistico, dados_regressao)
+# Checagem de parametrização via teste de Shapiro-Wilk
+shapiro.test(dados_regressao$sentimento_total)
 
-# Carregar os pacotes necessários para o gráfico
-library(ggplot2)
-library(tidyr)
-library(dplyr)
+# Testes estatísticos não-paramétricos ####
 
-# 1. Descobrir a nota mínima e máxima de sentimento no seu banco de dados
-nota_minima <- min(dados_regressao$sentimento_total, na.rm = TRUE)
-nota_maxima <- max(dados_regressao$sentimento_total, na.rm = TRUE)
+# Teste de Kruskal-Wallis
+kruskal <- kruskal.test(dados_regressao$sentimento_total ~ dados_regressao$posicao_fator)
 
-# 2. Criar uma sequência de 100 notas, indo da mínima até a máxima
-dados_grafico <- data.frame(
-  sentimento_total = seq(from = nota_minima, to = nota_maxima, length.out = 100)
+install.packages("FSA")
+library(FSA)
+
+# Teste de Dunn
+resultado_dunn <- dunnTest(sentimento_total ~ posicao_fator, 
+                           data = dados_regressao, 
+                           method = "bonferroni") 
+
+print(resultado_dunn)
+
+# Organização dos fatores
+dados_regressao$posicao_fator <- factor(dados_regressao$posicao_fator, 
+                              levels = c("Contrário", "Neutro", "Favorável"))
+
+# Construção do boxplot ####
+ggplot(dados_regressao, aes(x = posicao_fator, y = sentimento_total, fill = posicao_fator)) +
+  # geom_boxplot desenha as caixas e bigodes
+  geom_boxplot(alpha = 0.7, outlier.colour = "black", outlier.shape = 1) +
+  
+  # scale_fill_manual define as cores sóbrias e intuitivas
+  scale_fill_grey(start = 0.4, end = 0.9) +
+  
+  # Labs define títulos e legendas claros
+  labs(title = "Distribuição dos scores de sentimento por categoria de orientação crítica",
+       x = "Classificação da análise de conteúdo do OPEI",
+       y = "Score de sentimento (OplexiconPT v. 3.0)",
+       caption = "Fonte: Elaboração própria com dados da pesquisa.") +
+  
+  # Estética limpa
+  theme_classic() +
+  theme(legend.position = "none", # Remove legenda redundante (já está no eixo X)
+        text = element_text(size = 10, family = "serif"),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        axis.title = element_text(face = "bold"))
+
+ggsave(
+  filename = "boxplot_sentimento_opei.png",
+  plot = last_plot(), # Garante que vai salvar o último gráfico gerado
+  width = 16,         # Largura em cm
+  height = 12,        # Altura em cm
+  units = "cm",       # Unidade de medida
+  dpi = 300           # Alta resolução para impressão
 )
-
-# 3. Pedir para o modelo calcular a PROBABILIDADE para essa sequência de notas
-probabilidades <- predict(modelo_logistico, newdata = dados_grafico, type = "probs")
-
-# 4. Juntar as notas com as probabilidades calculadas
-dados_plot <- cbind(dados_grafico, probabilidades)
-
-# 5. Transformar a tabela para o formato longo (exigência do ggplot2)
-dados_plot_longo <- dados_plot %>%
-  pivot_longer(
-    cols = c("Neutro", "Contrário", "Favorável"), # As três colunas geradas pelo predict
-    names_to = "posicao_fator",                   # Nome da nova coluna com a categoria
-    values_to = "Probabilidade"                   # Nome da nova coluna com o valor percentual
-  )
-
-# 6. Criar o gráfico com ggplot2
-grafico_regressao <- ggplot(dados_plot_longo, aes(x = sentimento_total, y = Probabilidade, color = posicao_fator)) +
-  geom_line(size = 1.2) + # Cria as linhas do gráfico, levemente mais grossas
-  
-  # Personalizando as cores das linhas para fazer sentido
-  scale_color_manual(values = c("Contrário" = "#E06666", 
-                                "Neutro" = "#B7B7B7", 
-                                "Favorável" = "#6D9EEB")) +
-  
-  # Adicionando títulos e rótulos
-  labs(
-    title = "Probabilidade de Classificação vs. Análise de Sentimento",
-    subtitle = "Modelo de Regressão Logística Multinomial",
-    x = "Pontuação de Sentimento (Léxico)",
-    y = "Probabilidade do Modelo (0 a 1)",
-    color = "Análise Humana"
-  ) +
-  
-  # Um tema limpo e bonito para relatórios
-  theme_minimal() +
-  theme(legend.position = "bottom") # Coloca a legenda na parte de baixo
-
-# Exibir o gráfico na tela
-print(grafico_regressao)
-
-# 1. Executar o modelo ANOVA
-# Lemos: "O sentimento_total é influenciado (~) pela posicao_fator?"
-modelo_anova <- aov(sentimento_total ~ posicao_fator, data = dados_regressao)
-
-# 2. Ver o resultado geral da ANOVA
-print("=== RESULTADO GLOBAL DA ANOVA ===")
-summary(modelo_anova)
-
-# 3. Teste de Tukey (Comparações múltiplas)
-# Isso vai criar uma tabela cruzando as categorias duas a duas
-teste_tukey <- TukeyHSD(modelo_anova)
-print("=== RESULTADO DO TESTE DE TUKEY (Onde está a diferença?) ===")
-print(teste_tukey)
-plot(teste_tukey)
-
-# 4. Construção do Gráfico Boxplot
-grafico_anova <- ggplot(dados_regressao, aes(x = posicao_fator, y = sentimento_total, fill = posicao_fator)) +
-  # geom_boxplot desenha as caixas. O alpha=0.7 deixa as cores um pouco transparentes
-  geom_boxplot(alpha = 0.7, outlier.color = "black", outlier.shape = 16) +
-  
-  # Usamos as mesmas cores do gráfico anterior para manter a consistência visual na dissertação
-  scale_fill_manual(values = c("Contrário" = "#E06666", 
-                               "Neutro" = "#B7B7B7", 
-                               "Favorável" = "#6D9EEB")) +
-  
-  # Adicionando títulos metodológicos e eixos claros
-  labs(
-    title = "Distribuição do sentimento por categoria de orientação crítica da imprensa à PEB",
-    subtitle = "Análise de Variância (ANOVA)",
-    x = "Categorias da Análise do OPEI",
-    y = "Nota de Sentimento Automatizada (Máquina)"
-  ) +
-  
-  # Tema limpo
-  theme_minimal() +
-  
-  # Escondemos a legenda lateral porque o eixo X (embaixo) já tem os nomes das categorias
-  theme(legend.position = "none",
-        plot.title = element_text(face = "bold", size = 12))
-
-# Exibir o gráfico na tela
-print(grafico_anova)
-
-media_sentimento <- mean(dados_regressao$sentimento_total, na.rm = TRUE)
-desvio_sentimento <- sd(dados_regressao$sentimento_total, na.rm = TRUE)
-hist(dados_regressao$sentimento_total)
 
